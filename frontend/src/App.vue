@@ -41,7 +41,19 @@ async function sendMessage() {
   // Step 1: Run all MCP tool calls
   await thinkingPanel.value.runAll()
   const collectedParams = thinkingPanel.value.getValues()
+  thinkingPanel.value.collapse()
   collectingParams.value = false
+
+  // Insert thinking summary between user and assistant messages
+  const snapshot = thinkingPanel.value.getSnapshot()
+  const doneCount = snapshot.filter((t) => t.status === 'done').length
+  messages.value.push({
+    role: 'thinking',
+    doneCount,
+    total: snapshot.length,
+    tools: snapshot,
+    expanded: false,
+  })
 
   const assistantMsg = { role: 'assistant', content: '', rendered: '' }
   messages.value.push(assistantMsg)
@@ -132,13 +144,28 @@ onBeforeUnmount(() => {
     <h1 class="title">SQL 智能诊断</h1>
 
     <div ref="chatContainer" class="messages">
-      <div
-        v-for="(msg, i) in messages"
-        :key="i"
-        :class="['message', msg.role]"
-      >
-        <div class="bubble" v-html="msg.rendered || renderMarkdown(msg.content)"></div>
-      </div>
+      <template v-for="(msg, i) in messages" :key="i">
+        <div
+          v-if="msg.role === 'thinking'"
+          class="message thinking-msg"
+        >
+          <div class="thinking-inline" @click="msg.expanded = !msg.expanded">
+            <span class="thinking-summary-icon">✓</span>
+            参数收集完成 ({{ msg.doneCount }}/{{ msg.total }})
+            <span class="thinking-toggle">{{ msg.expanded ? '折叠 ▾' : '展开 ▸' }}</span>
+          </div>
+          <div v-if="msg.expanded" class="thinking-detail">
+            <div v-for="t in msg.tools" :key="t.name" class="thinking-tool-line">
+              <span v-if="t.status === 'done'" class="check">✓</span>
+              <span v-else class="error-icon">✗</span>
+              {{ t.label }}
+            </div>
+          </div>
+        </div>
+        <div v-else :class="['message', msg.role]">
+          <div class="bubble" v-html="msg.rendered || renderMarkdown(msg.content)"></div>
+        </div>
+      </template>
 
       <div v-if="collectingParams" class="message assistant">
         <div class="bubble collecting">
@@ -223,6 +250,57 @@ onBeforeUnmount(() => {
   background: transparent;
   box-shadow: none;
   padding: 0;
+}
+
+/* ── Inline thinking summary (between user and assistant) ── */
+.thinking-msg {
+  justify-content: flex-start;
+}
+
+.thinking-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #64748b;
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 0;
+}
+
+.thinking-summary-icon {
+  color: #22c55e;
+  font-weight: bold;
+  font-size: 12px;
+}
+
+.thinking-toggle {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.thinking-detail {
+  padding: 4px 0 4px 8px;
+  border-left: 2px solid #e2e8f0;
+  margin: 4px 0 4px 8px;
+}
+
+.thinking-tool-line {
+  font-size: 12px;
+  color: #94a3b8;
+  padding: 2px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.thinking-tool-line .check {
+  color: #22c55e;
+  font-weight: bold;
+}
+
+.thinking-tool-line .error-icon {
+  color: #ef4444;
 }
 
 .bubble :deep(code) {

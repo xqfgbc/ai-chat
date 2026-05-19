@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, computed } from 'vue'
 
 const TOOL_LABELS = {
   sql: '获取慢查询 SQL 语句',
@@ -11,20 +11,20 @@ const TOOL_LABELS = {
 
 const tools = ref([])
 const activeIndex = ref(0)
+const done = ref(false)
+const collapsed = ref(false)
 
 const toolOrder = Object.keys(TOOL_LABELS)
 
-watch(
-  () => tools.value,
-  (val) => {
-    activeIndex.value = val.length
-  },
-  { deep: true },
+const doneCount = computed(
+  () => tools.value.filter((t) => t.status === 'done').length
 )
 
 function start() {
   tools.value = []
   activeIndex.value = 0
+  done.value = false
+  collapsed.value = false
 }
 
 async function fetchNext() {
@@ -55,6 +55,11 @@ async function runAll() {
   for (let i = 0; i < toolOrder.length; i++) {
     await fetchNext()
   }
+  done.value = true
+}
+
+function collapse() {
+  if (done.value) collapsed.value = true
 }
 
 function getValues() {
@@ -63,31 +68,47 @@ function getValues() {
   )
 }
 
-defineExpose({ runAll, getValues })
+function getSnapshot() {
+  return tools.value.map((t) => ({
+    name: t.name,
+    label: t.label,
+    status: t.status,
+  }))
+}
+
+defineExpose({ runAll, getValues, collapse, getSnapshot })
 </script>
 
 <template>
-  <div class="thinking">
-    <div class="thinking-header">
-      <span class="icon">🔍</span> 正在收集参数...
+  <div class="thinking" :class="{ collapsed }">
+    <!-- Collapsed bar -->
+    <div v-if="done && collapsed" class="collapse-bar" @click="collapsed = false">
+      <span class="summary">
+        ✓ 参数收集完成 ({{ doneCount }}/{{ toolOrder.length }})
+      </span>
+      <span class="hint">展开 ▸</span>
     </div>
-    <div v-for="(t, i) in tools" :key="t.name" class="tool-item">
-      <div class="tool-label">
-        <span v-if="t.status === 'loading'" class="spinner">⏳</span>
-        <span v-else-if="t.status === 'done'" class="check">✓</span>
-        <span v-else class="error-icon">✗</span>
-        {{ t.label }}
+
+    <!-- Expanded content -->
+    <template v-else>
+      <div class="thinking-header" @click="done ? (collapsed = true) : null">
+        <span class="icon">{{ done ? '📋' : '🔍' }}</span>
+        {{ done ? '参数收集结果' : '正在收集参数...' }}
+        <span v-if="done" class="collapse-hint">点击折叠 ▾</span>
       </div>
-      <div
-        v-if="t.status === 'done'"
-        class="tool-status success"
-      >
-        成功
+      <div v-for="t in tools" :key="t.name" class="tool-item">
+        <div class="tool-label">
+          <span v-if="t.status === 'loading'" class="spinner">⏳</span>
+          <span v-else-if="t.status === 'done'" class="check">✓</span>
+          <span v-else class="error-icon">✗</span>
+          {{ t.label }}
+        </div>
+        <div v-if="t.status === 'done'" class="tool-status success">成功</div>
+        <div v-else-if="t.status === 'error'" class="tool-status error">
+          失败: {{ t.error }}
+        </div>
       </div>
-      <div v-else-if="t.status === 'error'" class="tool-status error">
-        失败: {{ t.error }}
-      </div>
-    </div>
+    </template>
   </div>
 </template>
 
@@ -98,6 +119,11 @@ defineExpose({ runAll, getValues })
   border-radius: 12px;
   padding: 16px;
   margin-bottom: 8px;
+  transition: all 0.2s;
+}
+
+.thinking.collapsed {
+  padding: 10px 16px;
 }
 
 .thinking-header {
@@ -107,6 +133,28 @@ defineExpose({ runAll, getValues })
   font-size: 14px;
   color: #64748b;
   margin-bottom: 12px;
+}
+
+.collapse-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  font-size: 13px;
+  color: #22c55e;
+  user-select: none;
+}
+
+.collapse-bar .hint {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.thinking-header .collapse-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: #94a3b8;
+  cursor: pointer;
 }
 
 .tool-item {
@@ -129,8 +177,13 @@ defineExpose({ runAll, getValues })
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .check {
