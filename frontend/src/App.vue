@@ -1,63 +1,17 @@
 <script setup>
 import { ref, nextTick, onBeforeUnmount } from 'vue'
+import { marked } from 'marked'
+import ThinkingPanel from './components/ThinkingPanel.vue'
 
-const API_URL = 'http://localhost:8000/api/chat'
+const BAILIAN_URL = 'http://localhost:8000/api/bailian'
 
 const messages = ref([])
 const input = ref('')
 const loading = ref(false)
 const chatContainer = ref(null)
-let typewriterTimer = null
-
-async function sendMessage() {
-  const text = input.value.trim()
-  if (!text || loading.value) return
-
-  messages.value.push({ role: 'user', content: text })
-  input.value = ''
-  loading.value = true
-
-  const assistantMsg = { role: 'assistant', content: '' }
-  messages.value.push(assistantMsg)
-
-  await nextTick()
-  scrollToBottom()
-
-  try {
-    const resp = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
-    })
-
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ detail: 'Request failed' }))
-      assistantMsg.content = `Error: ${err.detail || 'Unknown error'}`
-      return
-    }
-
-    const data = await resp.json()
-    typewriterEffect(assistantMsg, data.reply)
-  } catch (e) {
-    assistantMsg.content = `Network error: ${e.message}`
-  }
-}
-
-function typewriterEffect(msgObj, fullText) {
-  let index = 0
-  const delay = 30
-
-  typewriterTimer = setInterval(() => {
-    if (index < fullText.length) {
-      msgObj.content += fullText[index]
-      index++
-      nextTick(scrollToBottom)
-    } else {
-      clearInterval(typewriterTimer)
-      loading.value = false
-    }
-  }, delay)
-}
+const thinkingPanel = ref(null)
+const collectingParams = ref(false)
+let abortController = null
 
 function scrollToBottom() {
   if (chatContainer.value) {
@@ -72,14 +26,110 @@ function handleKeydown(e) {
   }
 }
 
+async function sendMessage() {
+  const text = input.value.trim()
+  if (!text || loading.value) return
+
+  messages.value.push({ role: 'user', content: text })
+  input.value = ''
+  loading.value = true
+  collectingParams.value = true
+
+  await nextTick()
+  scrollToBottom()
+
+  // Step 1: Run all MCP tool calls
+  await thinkingPanel.value.runAll()
+  const collectedParams = thinkingPanel.value.getValues()
+  collectingParams.value = false
+
+  const assistantMsg = { role: 'assistant', content: '', rendered: '' }
+  messages.value.push(assistantMsg)
+
+  await nextTick()
+  scrollToBottom()
+
+  // Step 2: Call Bailian app (streaming SSE) with collected params
+  try {
+    abortController = new AbortController()
+    const resp = await fetch(BAILIAN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, params: collectedParams }),
+      signal: abortController.signal,
+    })
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: 'Request failed' }))
+      assistantMsg.content = `Error: ${err.detail || 'Unknown error'}`
+      loading.value = false
+      return
+    }
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let fullText = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+
+      // Parse SSE events
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6)
+          if (data === '[DONE]') continue
+          try {
+            const parsed = JSON.parse(data)
+            if (parsed.text) {
+              fullText += parsed.text
+              assistantMsg.content = fullText
+              nextTick(scrollToBottom)
+            } else if (parsed.error) {
+              assistantMsg.content = `Error: ${parsed.error}`
+              loading.value = false
+            }
+          } catch (e) {
+            // skip malformed JSON chunks
+          }
+        }
+      }
+    }
+
+    // Stream complete — render full markdown
+    if (fullText) {
+      assistantMsg.rendered = marked.parse(fullText)
+    } else if (!assistantMsg.content) {
+      assistantMsg.content = '未收到回复内容'
+    }
+    loading.value = false
+  } catch (e) {
+    if (e.name === 'AbortError') return
+    console.error('Bailian error:', e)
+    assistantMsg.content = `Network error: ${e.message}`
+    loading.value = false
+  }
+}
+
+function renderMarkdown(content) {
+  if (!content) return ''
+  return content
+}
+
 onBeforeUnmount(() => {
-  if (typewriterTimer) clearInterval(typewriterTimer)
+  if (abortController) abortController.abort()
 })
 </script>
 
 <template>
   <div class="chat-layout">
-    <h1 class="title">AI Chat</h1>
+    <h1 class="title">SQL 智能诊断</h1>
 
     <div ref="chatContainer" class="messages">
       <div
@@ -87,7 +137,13 @@ onBeforeUnmount(() => {
         :key="i"
         :class="['message', msg.role]"
       >
-        <div class="bubble">{{ msg.content || 'Thinking...' }}</div>
+        <div class="bubble" v-html="msg.rendered || renderMarkdown(msg.content)"></div>
+      </div>
+
+      <div v-if="collectingParams" class="message assistant">
+        <div class="bubble collecting">
+          <ThinkingPanel ref="thinkingPanel" />
+        </div>
       </div>
     </div>
 
@@ -95,12 +151,12 @@ onBeforeUnmount(() => {
       <textarea
         v-model="input"
         @keydown="handleKeydown"
-        placeholder="Type your message... (Enter to send)"
+        placeholder="输入消息... (Enter 发送)"
         :disabled="loading"
         rows="1"
       ></textarea>
       <button @click="sendMessage" :disabled="loading || !input.trim()">
-        {{ loading ? 'Sending...' : 'Send' }}
+        {{ loading ? '处理中...' : '发送' }}
       </button>
     </div>
   </div>
@@ -142,11 +198,10 @@ onBeforeUnmount(() => {
 }
 
 .bubble {
-  max-width: 75%;
-  padding: 10px 16px;
+  max-width: 85%;
+  padding: 12px 18px;
   border-radius: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
+  line-height: 1.6;
   word-break: break-word;
 }
 
@@ -161,6 +216,66 @@ onBeforeUnmount(() => {
   color: #333;
   border-bottom-left-radius: 4px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.message.assistant .bubble.collecting {
+  max-width: 100%;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.bubble :deep(code) {
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 13px;
+}
+
+.bubble :deep(pre) {
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 14px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.bubble :deep(pre code) {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.bubble :deep(h1), .bubble :deep(h2), .bubble :deep(h3) {
+  margin: 12px 0 6px;
+}
+
+.bubble :deep(p) {
+  margin: 6px 0;
+}
+
+.bubble :deep(table) {
+  border-collapse: collapse;
+  margin: 8px 0;
+  width: 100%;
+}
+
+.bubble :deep(th), .bubble :deep(td) {
+  border: 1px solid #e2e8f0;
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 13px;
+}
+
+.bubble :deep(th) {
+  background: #f8fafc;
+  font-weight: 600;
+}
+
+.bubble :deep(ul), .bubble :deep(ol) {
+  padding-left: 20px;
 }
 
 .input-area {
