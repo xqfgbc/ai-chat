@@ -1,71 +1,35 @@
 <script setup>
+
 import { ref, computed } from 'vue'
 
-const TOOL_LABELS = {
-  sql: '获取慢查询 SQL 语句',
-  table_structures: '获取表结构信息',
-  slow_log: '获取慢查询日志',
-  explain_result: '获取 EXPLAIN 分析结果',
-  tables_info: '获取表信息描述',
-}
-
 const tools = ref([])
-const activeIndex = ref(0)
 const done = ref(false)
 const collapsed = ref(false)
-
-const toolOrder = Object.keys(TOOL_LABELS)
 
 const doneCount = computed(
   () => tools.value.filter((t) => t.status === 'done').length
 )
 
-function start() {
+function init(count) {
   tools.value = []
-  activeIndex.value = 0
   done.value = false
   collapsed.value = false
+  for (let i = 0; i < count; i++) {
+    tools.value.push({ name: '', label: '', status: 'pending' })
+  }
 }
 
-async function fetchNext() {
-  if (activeIndex.value >= toolOrder.length) return
-
-  const name = toolOrder[activeIndex.value]
-  const label = TOOL_LABELS[name]
-  const idx = activeIndex.value
-
-  tools.value.push({ name, label, status: 'loading' })
-
-  try {
-    const resp = await fetch(`http://localhost:8000/api/tools/${name}`)
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    const data = await resp.json()
-    tools.value[idx].status = 'done'
-    tools.value[idx].value = data.value
-  } catch (e) {
-    tools.value[idx].status = 'error'
-    tools.value[idx].error = e.message
+function update(name, label, status, error) {
+  // Find first pending slot and fill it
+  const idx = tools.value.findIndex((t) => t.status === 'pending')
+  if (idx !== -1) {
+    tools.value[idx] = { name, label, status, error: error || null }
   }
-
-  activeIndex.value++
 }
 
-async function runAll() {
-  start()
-  for (let i = 0; i < toolOrder.length; i++) {
-    await fetchNext()
-  }
+function finish() {
   done.value = true
-}
-
-function collapse() {
-  if (done.value) collapsed.value = true
-}
-
-function getValues() {
-  return Object.fromEntries(
-    tools.value.filter((t) => t.status === 'done').map((t) => [t.name, t.value])
-  )
+  collapsed.value = true
 }
 
 function getSnapshot() {
@@ -76,7 +40,7 @@ function getSnapshot() {
   }))
 }
 
-defineExpose({ runAll, getValues, collapse, getSnapshot })
+defineExpose({ init, update, finish, getSnapshot })
 </script>
 
 <template>
@@ -84,7 +48,7 @@ defineExpose({ runAll, getValues, collapse, getSnapshot })
     <!-- Collapsed bar -->
     <div v-if="done && collapsed" class="collapse-bar" @click="collapsed = false">
       <span class="summary">
-        ✓ 参数收集完成 ({{ doneCount }}/{{ toolOrder.length }})
+        ✓ 参数收集完成 ({{ doneCount }}/{{ tools.length }})
       </span>
       <span class="hint">展开 ▸</span>
     </div>
@@ -96,12 +60,12 @@ defineExpose({ runAll, getValues, collapse, getSnapshot })
         {{ done ? '参数收集结果' : '正在收集参数...' }}
         <span v-if="done" class="collapse-hint">点击折叠 ▾</span>
       </div>
-      <div v-for="t in tools" :key="t.name" class="tool-item">
+      <div v-for="(t, idx) in tools" :key="idx" class="tool-item">
         <div class="tool-label">
-          <span v-if="t.status === 'loading'" class="spinner">⏳</span>
+          <span v-if="t.status === 'pending'" class="spinner">⏳</span>
           <span v-else-if="t.status === 'done'" class="check">✓</span>
           <span v-else class="error-icon">✗</span>
-          {{ t.label }}
+          {{ t.label || '等待中...' }}
         </div>
         <div v-if="t.status === 'done'" class="tool-status success">成功</div>
         <div v-else-if="t.status === 'error'" class="tool-status error">

@@ -1,11 +1,12 @@
 <script setup>
+
 import { ref, nextTick, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
 import ThinkingPanel from './components/ThinkingPanel.vue'
 
 marked.use({ gfm: true, breaks: false })
 
-const BAILIAN_URL = 'http://localhost:8000/api/bailian'
+const AGENT_URL = 'http://localhost:8000/api/chat/agent'
 
 const messages = ref([])
 const input = ref('')
@@ -13,6 +14,7 @@ const loading = ref(false)
 const chatContainer = ref(null)
 const thinkingPanel = ref(null)
 const collectingParams = ref(false)
+
 let abortController = null
 
 function scrollToBottom() {
@@ -28,25 +30,7 @@ function handleKeydown(e) {
   }
 }
 
-async function sendMessage() {
-  const text = input.value.trim()
-  if (!text || loading.value) return
-
-  messages.value.push({ role: 'user', content: text })
-  input.value = ''
-  loading.value = true
-  collectingParams.value = true
-
-  await nextTick()
-  scrollToBottom()
-
-  // Step 1: Run all MCP tool calls
-  await thinkingPanel.value.runAll()
-  const collectedParams = thinkingPanel.value.getValues()
-  thinkingPanel.value.collapse()
-  collectingParams.value = false
-
-  // Insert thinking summary between user and assistant messages
+function createThinkingSummary() {
   const snapshot = thinkingPanel.value.getSnapshot()
   const doneCount = snapshot.filter((t) => t.status === 'done').length
   messages.value.push({
@@ -56,40 +40,48 @@ async function sendMessage() {
     tools: snapshot,
     expanded: false,
   })
+}
 
+function createAssistantPlaceholder() {
   messages.value.push({ role: 'assistant', content: '', rendered: '' })
-  const lastIdx = messages.value.length - 1
+  return messages.value.length - 1
+}
+
+async function sendMessage() {
+  const text = input.value.trim()
+  if (!text || loading.value) return
+
+  messages.value.push({ role: 'user', content: text })
+  input.value = ''
+  loading.value = true
 
   await nextTick()
   scrollToBottom()
 
-  // Step 2: Call Bailian app with SSE streaming + typewriter
   try {
     abortController = new AbortController()
-    const resp = await fetch(BAILIAN_URL, {
+    const resp = await fetch(AGENT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, params: collectedParams }),
+      body: JSON.stringify({ message: text }),
       signal: abortController.signal,
     })
 
     if (!resp.ok) {
-      messages.value[lastIdx].content = `Error: ${resp.status}`
+      messages.value.push({ role: 'assistant', content: `Error: ${resp.status}`, rendered: '' })
       loading.value = false
       return
     }
 
-    // Show thinking indicator while waiting for model
-    messages.value[lastIdx].rendered =
-      '<span class="thinking-indicator">正在分析<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></span>'
-
     let fullText = ''
     let streamDone = false
     let streamError = null
+    let assistantMsgIdx = -1
 
     const reader = resp.body.getReader()
     const decoder = new TextDecoder('utf-8', { stream: true })
 
+    // ── SSE reader (runs in parallel with typewriter) ──
     async function readSSE() {
       let sseBuf = ''
       try {
@@ -100,15 +92,79 @@ async function sendMessage() {
           sseBuf += decoder.decode(value, { stream: true })
           const lines = sseBuf.split('\n')
           sseBuf = ''
+
           for (const line of lines) {
             if (!line.startsWith('data: ')) continue
             const dataStr = line.slice(6)
             if (dataStr === '[DONE]') { streamDone = true; return }
+
+            let event
             try {
-              const parsed = JSON.parse(dataStr)
-              if (parsed.error) { streamError = parsed.error; streamDone = true; return }
-              if (parsed.text) fullText += parsed.text
-            } catch { sseBuf = line + '\n' }
+              event = JSON.parse(dataStr)
+            } catch {
+              sseBuf = line + '\n'
+              continue
+            }
+
+            if (event.error) {
+              streamError = event.error
+              streamDone = true
+              return
+            }
+
+            switch (event.type) {
+              case 'route':
+                if (event.action === 'slow_sql') {
+                  collectingParams.value = true
+                  await nextTick()
+                  scrollToBottom()
+                }
+                break
+
+              case 'tool_start':
+                await thinkingPanel.value.init(event.count)
+                await nextTick()
+                scrollToBottom()
+                break
+
+              case 'tool_progress':
+                thinkingPanel.value.update(event.name, event.label, event.status, event.error)
+                break
+
+              case 'tool_done':
+                thinkingPanel.value.finish()
+                collectingParams.value = false
+                createThinkingSummary()
+                assistantMsgIdx = createAssistantPlaceholder()
+                await nextTick()
+                scrollToBottom()
+                break
+
+              case 'thinking_start':
+                if (assistantMsgIdx >= 0) {
+                  messages.value[assistantMsgIdx].rendered =
+                    '<span class="thinking-indicator">正在分析<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></span>'
+                }
+                break
+
+              case 'text':
+                if (assistantMsgIdx < 0) {
+                  assistantMsgIdx = createAssistantPlaceholder()
+                  await nextTick()
+                  scrollToBottom()
+                }
+                fullText += event.content
+                break
+
+              case 'done':
+                streamDone = true
+                return
+
+              case 'error':
+                streamError = event.message
+                streamDone = true
+                return
+            }
           }
         }
       } catch (e) {
@@ -119,7 +175,7 @@ async function sendMessage() {
 
     const readTask = readSSE()
 
-    // Typewriter: render markdown incrementally
+    // ── Typewriter (runs in parallel with SSE reader) ──
     const BATCH = 5
     let pos = 0
     await new Promise((resolve, reject) => {
@@ -127,14 +183,13 @@ async function sendMessage() {
         const remaining = fullText.length - pos
         const take = Math.min(BATCH, remaining)
 
-        if (take > 0) {
+        if (take > 0 && assistantMsgIdx >= 0) {
           pos += take
           const part = fullText.slice(0, pos)
-          // Render up to last complete line to avoid partial-markdown artifacts
           const lastNL = part.lastIndexOf('\n')
           const safe = lastNL > 0 ? part.slice(0, lastNL) : part
-          messages.value[lastIdx].rendered = marked.parse(safe)
-          messages.value[lastIdx].content = part
+          messages.value[assistantMsgIdx].rendered = marked.parse(safe)
+          messages.value[assistantMsgIdx].content = part
           scrollToBottom()
         }
 
@@ -152,18 +207,24 @@ async function sendMessage() {
     await readTask
 
     if (streamError) {
-      messages.value[lastIdx].content = `Error: ${streamError}`
+      if (assistantMsgIdx >= 0) {
+        messages.value[assistantMsgIdx].content = `Error: ${streamError}`
+      } else {
+        messages.value.push({ role: 'assistant', content: `Error: ${streamError}`, rendered: '' })
+      }
       loading.value = false
       return
     }
 
-    messages.value[lastIdx].rendered = marked.parse(fullText)
-    messages.value[lastIdx].content = fullText
+    if (assistantMsgIdx >= 0 && fullText) {
+      messages.value[assistantMsgIdx].rendered = marked.parse(fullText)
+      messages.value[assistantMsgIdx].content = fullText
+    }
     loading.value = false
   } catch (e) {
     if (e.name === 'AbortError') return
-    console.error('Bailian error:', e)
-    messages.value[lastIdx].content = `Network error: ${e.message}`
+    console.error('Agent error:', e)
+    messages.value.push({ role: 'assistant', content: `Network error: ${e.message}`, rendered: '' })
     loading.value = false
   }
 }
@@ -286,7 +347,7 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 
-/* ── Inline thinking summary (between user and assistant) ── */
+/* ── Inline thinking summary ── */
 .thinking-msg {
   justify-content: flex-start;
 }
