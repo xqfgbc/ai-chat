@@ -25,7 +25,7 @@ load_dotenv()
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-plus")
-BAILIAN_APP_ID = os.getenv("BAILIAN_APP_ID", "1eedcc662da24784a2e73d4771aec350")
+BAILIAN_APP_ID = os.getenv("BAILIAN_APP_ID", "")
 
 
 @asynccontextmanager
