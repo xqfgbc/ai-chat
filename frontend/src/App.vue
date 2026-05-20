@@ -122,13 +122,17 @@ async function sendMessage() {
                 break
 
               case 'tool_start':
-                await thinkingPanel.value.init(event.count)
+                thinkingPanel.value.init()
                 await nextTick()
                 scrollToBottom()
                 break
 
               case 'tool_progress':
-                thinkingPanel.value.update(event.name, event.label, event.status, event.error)
+                if (event.status === 'loading') {
+                  thinkingPanel.value.addTool(event.name, event.label, event.status)
+                } else {
+                  thinkingPanel.value.updateTool(event.name, event.status, event.error)
+                }
                 break
 
               case 'tool_done':

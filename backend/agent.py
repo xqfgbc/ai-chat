@@ -237,6 +237,7 @@ class SlowSQLAgent:
         params = {}
         for name, info in TOOLS.items():
             label = info["label"]
+            yield {"type": "tool_progress", "name": name, "label": label, "status": "loading", "error": None}
             try:
                 value = await self._fetch_tool(name)
                 params[name] = value

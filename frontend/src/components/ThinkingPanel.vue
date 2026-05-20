@@ -10,20 +10,21 @@ const doneCount = computed(
   () => tools.value.filter((t) => t.status === 'done').length
 )
 
-function init(count) {
+function init() {
   tools.value = []
   done.value = false
   collapsed.value = false
-  for (let i = 0; i < count; i++) {
-    tools.value.push({ name: '', label: '', status: 'pending' })
-  }
 }
 
-function update(name, label, status, error) {
-  // Find first pending slot and fill it
-  const idx = tools.value.findIndex((t) => t.status === 'pending')
-  if (idx !== -1) {
-    tools.value[idx] = { name, label, status, error: error || null }
+function addTool(name, label, status) {
+  tools.value.push({ name, label, status, error: null })
+}
+
+function updateTool(name, status, error) {
+  const t = tools.value.find((t) => t.name === name)
+  if (t) {
+    t.status = status
+    if (error) t.error = error
   }
 }
 
@@ -40,7 +41,7 @@ function getSnapshot() {
   }))
 }
 
-defineExpose({ init, update, finish, getSnapshot })
+defineExpose({ init, addTool, updateTool, finish, getSnapshot })
 </script>
 
 <template>
@@ -62,10 +63,10 @@ defineExpose({ init, update, finish, getSnapshot })
       </div>
       <div v-for="(t, idx) in tools" :key="idx" class="tool-item">
         <div class="tool-label">
-          <span v-if="t.status === 'pending'" class="spinner">⏳</span>
+          <span v-if="t.status === 'loading'" class="spinner">⏳</span>
           <span v-else-if="t.status === 'done'" class="check">✓</span>
           <span v-else class="error-icon">✗</span>
-          {{ t.label || '等待中...' }}
+          {{ t.label }}
         </div>
         <div v-if="t.status === 'done'" class="tool-status success">成功</div>
         <div v-else-if="t.status === 'error'" class="tool-status error">
