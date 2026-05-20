@@ -94,27 +94,47 @@ def _is_truncated(text: str) -> bool:
     stripped = text.rstrip()
     if not stripped:
         return False
-    if len(stripped) < 50:
+    if len(stripped) < 30:
         return False
 
     last_char = stripped[-1]
 
-    if last_char in {'。', '！', '？', '…'}:
+    # Strong sentence endings in Chinese and English
+    if last_char in {'。', '！', '？', '…', '.', '!', '?', '）', ')', '"', '"', '」', '》', '』'}:
         return False
 
-    if last_char == '\n' and len(stripped) > 50:
+    # Ends with markdown code fence
+    if stripped.endswith('```'):
+        return False
+
+    # Ends with closing bracket/brace
+    if last_char in {']', '}', '】', '』'}:
+        return False
+
+    # Ends with paragraph break — check previous line
+    if last_char == '\n':
         prev_line = stripped.rstrip('\n').split('\n')[-1].strip()
-        if prev_line and prev_line[-1] in {'。', '！', '？', '…', '：'}:
-            return False
+        if prev_line:
+            if prev_line[-1] in {'。', '！', '？', '…', '：', '.', '!', '?'}:
+                return False
+            # Empty line before a new heading/section is fine
+            if prev_line.startswith('```') or prev_line.startswith('---'):
+                return False
 
+    # Strong punctuation in last 15 non-space chars
     last_chars = stripped[-15:].replace(' ', '')
-    if any(c in {'。', '！', '？', '…'} for c in last_chars):
+    if any(c in {'。', '！', '？', '…', '.', '!', '?'} for c in last_chars):
         return False
 
+    # Unbalanced code fence — likely truncated mid-code-block
     if stripped.count('```') % 2 != 0:
         return True
 
-    return True
+    # Text exceeds 2000 chars without clear ending — likely done anyway
+    if len(stripped) > 2000:
+        return False
+
+    return False
 
 
 async def _stream_qwen_text(
@@ -164,7 +184,7 @@ async def _stream_bailian_text(
 ):
     """Stream Bailian app response as text chunks, with auto-continuation."""
     current_prompt = prompt
-    max_rounds = 5
+    max_rounds = 3
 
     for _ in range(max_rounds):
         queue: asyncio.Queue = asyncio.Queue()
@@ -211,6 +231,9 @@ async def _stream_bailian_text(
                 yield data
 
         if not _is_truncated(round_text):
+            break
+        # Only continue if we got substantial text from continuation
+        if len(round_text.strip()) < 10:
             break
         current_prompt = "继续"
 
