@@ -3,6 +3,8 @@ import { ref, nextTick, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
 import ThinkingPanel from './components/ThinkingPanel.vue'
 
+marked.use({ gfm: true, breaks: false })
+
 const BAILIAN_URL = 'http://localhost:8000/api/bailian'
 
 const messages = ref([])
@@ -117,7 +119,7 @@ async function sendMessage() {
 
     const readTask = readSSE()
 
-    // Typewriter: incremental markdown via setInterval
+    // Typewriter: render markdown incrementally
     const BATCH = 5
     let pos = 0
     await new Promise((resolve, reject) => {
@@ -128,8 +130,11 @@ async function sendMessage() {
         if (take > 0) {
           pos += take
           const part = fullText.slice(0, pos)
+          // Render up to last complete line to avoid partial-markdown artifacts
+          const lastNL = part.lastIndexOf('\n')
+          const safe = lastNL > 0 ? part.slice(0, lastNL) : part
+          messages.value[lastIdx].rendered = marked.parse(safe)
           messages.value[lastIdx].content = part
-          messages.value[lastIdx].rendered = marked.parse(part)
           scrollToBottom()
         }
 
@@ -398,6 +403,24 @@ onBeforeUnmount(() => {
 
 .bubble :deep(ul), .bubble :deep(ol) {
   padding-left: 20px;
+}
+.bubble :deep(blockquote) {
+  border-left: 3px solid #e2e8f0;
+  padding-left: 12px;
+  margin: 8px 0;
+  color: #64748b;
+}
+.bubble :deep(hr) {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 12px 0;
+}
+.bubble :deep(a) {
+  color: #4f46e5;
+  text-decoration: underline;
+}
+.bubble :deep(strong) {
+  font-weight: 600;
 }
 
 .input-area {
