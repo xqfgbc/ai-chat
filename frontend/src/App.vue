@@ -61,7 +61,10 @@ async function sendMessage() {
   await nextTick()
   scrollToBottom()
 
-  // Step 2: Call Bailian app (streaming SSE) with collected params
+  // Step 2: Call Bailian app with SSE streaming
+  assistantMsg.content = ''
+  let fullText = ''
+
   try {
     abortController = new AbortController()
     const resp = await fetch(BAILIAN_URL, {
@@ -78,48 +81,49 @@ async function sendMessage() {
       return
     }
 
+    // Read SSE stream
     const reader = resp.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let fullText = ''
+    const decoder = new TextDecoder('utf-8', { stream: true })
+    let sseBuffer = ''
 
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
 
-      buffer += decoder.decode(value, { stream: true })
-
-      // Parse SSE events
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
+      sseBuffer += decoder.decode(value, { stream: true })
+      const lines = sseBuffer.split('\n')
+      sseBuffer = ''
       for (const line of lines) {
         if (line.startsWith('data: ')) {
-          const data = line.slice(6)
-          if (data === '[DONE]') continue
+          const dataStr = line.slice(6)
+          if (dataStr === '[DONE]') continue
           try {
-            const parsed = JSON.parse(data)
-            if (parsed.text) {
-              fullText += parsed.text
-              assistantMsg.content = fullText
-              nextTick(scrollToBottom)
-            } else if (parsed.error) {
+            const parsed = JSON.parse(dataStr)
+            if (parsed.error) {
               assistantMsg.content = `Error: ${parsed.error}`
               loading.value = false
+              return
             }
-          } catch (e) {
-            // skip malformed JSON chunks
+            if (parsed.text) {
+              fullText += parsed.text
+              assistantMsg.content += parsed.text
+              await nextTick()
+              scrollToBottom()
+            }
+          } catch {
+            sseBuffer = line + '\n'
           }
         }
       }
     }
 
-    // Stream complete — render full markdown
-    if (fullText) {
-      assistantMsg.rendered = marked.parse(fullText)
-    } else if (!assistantMsg.content) {
+    if (!fullText) {
       assistantMsg.content = '未收到回复内容'
+      loading.value = false
+      return
     }
+
+    assistantMsg.rendered = marked.parse(fullText)
     loading.value = false
   } catch (e) {
     if (e.name === 'AbortError') return
@@ -127,11 +131,6 @@ async function sendMessage() {
     assistantMsg.content = `Network error: ${e.message}`
     loading.value = false
   }
-}
-
-function renderMarkdown(content) {
-  if (!content) return ''
-  return content
 }
 
 onBeforeUnmount(() => {
@@ -163,7 +162,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div v-else :class="['message', msg.role]">
-          <div class="bubble" v-html="msg.rendered || renderMarkdown(msg.content)"></div>
+          <div class="bubble" v-html="msg.rendered || msg.content"></div>
         </div>
       </template>
 

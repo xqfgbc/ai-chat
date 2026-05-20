@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import uuid
 from http import HTTPStatus
 from contextlib import asynccontextmanager
 
@@ -99,7 +100,7 @@ async def chat(req: ChatRequest):
     }
     url = f"{QWEN_BASE_URL}/chat/completions"
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=180) as client:
         resp = await client.post(url, headers=headers, json=payload)
 
     if resp.status_code != 200:
@@ -118,27 +119,81 @@ class BailianRequest(BaseModel):
     params: dict = {}
 
 
+def _is_truncated(text: str) -> bool:
+    """Check if text appears to be cut off mid-sentence."""
+    if not text:
+        return False
+    stripped = text.rstrip()
+    if not stripped:
+        return False
+    if len(stripped) < 50:
+        return False
+
+    last_char = stripped[-1]
+
+    # Strong sentence endings: definitely complete
+    if last_char in {'。', '！', '？', '…'}:
+        return False
+
+    # Ends with paragraph break after strong ending
+    if last_char == '\n' and len(stripped) > 50:
+        prev_line = stripped.rstrip('\n').split('\n')[-1].strip()
+        if prev_line and prev_line[-1] in {'。', '！', '？', '…', '：'}:
+            return False
+
+    # Check last 5 non-space chars for a strong ending
+    last_chars = stripped[-15:].replace(' ', '')
+    if any(c in {'。', '！', '？', '…'} for c in last_chars):
+        return False
+
+    # Unbalanced code fence
+    if stripped.count('```') % 2 != 0:
+        return True
+
+    # Likely truncated
+    return True
+
+
 @app.post("/api/bailian")
 async def bailian_chat(req: BailianRequest):
-    """Call Bailian app with streaming using dashscope SDK."""
+    """Call Bailian app with SSE streaming and auto-continuation."""
     if not DASHSCOPE_API_KEY:
         raise HTTPException(status_code=500, detail="DASHSCOPE_API_KEY not configured")
 
     def generate():
-        responses = Application.call(
-            api_key=DASHSCOPE_API_KEY,
-            app_id=BAILIAN_APP_ID,
-            prompt=req.message,
-            biz_params={"user_prompt_params": req.params},
-            stream=True,
-            incremental_output=True,
-        )
-        for response in responses:
-            if response.status_code != HTTPStatus.OK:
-                yield f"data: {json.dumps({'error': response.message})}\n\n"
-                return
-            if response.output.text:
-                yield f"data: {json.dumps({'text': response.output.text})}\n\n"
+        session_id = str(uuid.uuid4())
+        prompt = req.message
+        max_rounds = 5
+        round_num = 0
+
+        try:
+            while round_num < max_rounds:
+                round_num += 1
+                responses = Application.call(
+                    api_key=DASHSCOPE_API_KEY,
+                    app_id=BAILIAN_APP_ID,
+                    prompt=prompt,
+                    biz_params={"user_prompt_params": req.params},
+                    stream=True,
+                    incremental_output=True,
+                    session_id=session_id,
+                )
+                round_text = ""
+                for response in responses:
+                    if response.status_code != HTTPStatus.OK:
+                        yield f"data: {json.dumps({'error': response.message})}\n\n"
+                        return
+                    text = response.output.text if response.output else ''
+                    if text:
+                        round_text += text
+                        yield f"data: {json.dumps({'text': text})}\n\n"
+
+                if not _is_truncated(round_text):
+                    break
+                prompt = "继续"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
