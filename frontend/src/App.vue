@@ -55,16 +55,13 @@ async function sendMessage() {
     expanded: false,
   })
 
-  const assistantMsg = { role: 'assistant', content: '', rendered: '' }
-  messages.value.push(assistantMsg)
+  messages.value.push({ role: 'assistant', content: '', rendered: '' })
+  const lastIdx = messages.value.length - 1
 
   await nextTick()
   scrollToBottom()
 
-  // Step 2: Call Bailian app with SSE streaming
-  assistantMsg.content = ''
-  let fullText = ''
-
+  // Step 2: Call Bailian app with SSE streaming + typewriter
   try {
     abortController = new AbortController()
     const resp = await fetch(BAILIAN_URL, {
@@ -75,60 +72,89 @@ async function sendMessage() {
     })
 
     if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ detail: 'Request failed' }))
-      assistantMsg.content = `Error: ${err.detail || 'Unknown error'}`
+      messages.value[lastIdx].content = `Error: ${resp.status}`
       loading.value = false
       return
     }
 
-    // Read SSE stream
+    let fullText = ''
+    let streamDone = false
+    let streamError = null
+
     const reader = resp.body.getReader()
     const decoder = new TextDecoder('utf-8', { stream: true })
-    let sseBuffer = ''
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
+    async function readSSE() {
+      let sseBuf = ''
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) { streamDone = true; return }
 
-      sseBuffer += decoder.decode(value, { stream: true })
-      const lines = sseBuffer.split('\n')
-      sseBuffer = ''
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const dataStr = line.slice(6)
-          if (dataStr === '[DONE]') continue
-          try {
-            const parsed = JSON.parse(dataStr)
-            if (parsed.error) {
-              assistantMsg.content = `Error: ${parsed.error}`
-              loading.value = false
-              return
-            }
-            if (parsed.text) {
-              fullText += parsed.text
-              assistantMsg.content += parsed.text
-              await nextTick()
-              scrollToBottom()
-            }
-          } catch {
-            sseBuffer = line + '\n'
+          sseBuf += decoder.decode(value, { stream: true })
+          const lines = sseBuf.split('\n')
+          sseBuf = ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const dataStr = line.slice(6)
+            if (dataStr === '[DONE]') { streamDone = true; return }
+            try {
+              const parsed = JSON.parse(dataStr)
+              if (parsed.error) { streamError = parsed.error; streamDone = true; return }
+              if (parsed.text) fullText += parsed.text
+            } catch { sseBuf = line + '\n' }
           }
         }
+      } catch (e) {
+        streamError = e.message
+        streamDone = true
       }
     }
 
-    if (!fullText) {
-      assistantMsg.content = '未收到回复内容'
+    const readTask = readSSE()
+
+    // Typewriter: incremental markdown via setInterval
+    const BATCH = 5
+    let pos = 0
+    await new Promise((resolve, reject) => {
+      const timer = setInterval(() => {
+        const remaining = fullText.length - pos
+        const take = Math.min(BATCH, remaining)
+
+        if (take > 0) {
+          pos += take
+          const part = fullText.slice(0, pos)
+          messages.value[lastIdx].content = part
+          messages.value[lastIdx].rendered = marked.parse(part)
+          scrollToBottom()
+        }
+
+        if (streamDone && pos >= fullText.length) {
+          clearInterval(timer)
+          resolve()
+        }
+        if (streamError) {
+          clearInterval(timer)
+          reject(new Error(streamError))
+        }
+      }, 25)
+    })
+
+    await readTask
+
+    if (streamError) {
+      messages.value[lastIdx].content = `Error: ${streamError}`
       loading.value = false
       return
     }
 
-    assistantMsg.rendered = marked.parse(fullText)
+    messages.value[lastIdx].rendered = marked.parse(fullText)
+    messages.value[lastIdx].content = fullText
     loading.value = false
   } catch (e) {
     if (e.name === 'AbortError') return
     console.error('Bailian error:', e)
-    assistantMsg.content = `Network error: ${e.message}`
+    messages.value[lastIdx].content = `Network error: ${e.message}`
     loading.value = false
   }
 }
