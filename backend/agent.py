@@ -231,19 +231,14 @@ class SlowSQLAgent:
             {"type": "done"}
             {"type": "error", "message": str}
         """
-        # Phase 1: Collect tools in parallel
+        # Phase 1: Collect tools sequentially (for progressive UI display)
         yield {"type": "tool_start", "count": len(TOOLS)}
 
         params = {}
-        tasks = {
-            name: asyncio.create_task(self._fetch_tool(name))
-            for name in TOOLS
-        }
-
-        for name, task in tasks.items():
-            label = TOOLS[name]["label"]
+        for name, info in TOOLS.items():
+            label = info["label"]
             try:
-                value = await task
+                value = await self._fetch_tool(name)
                 params[name] = value
                 yield {"type": "tool_progress", "name": name, "label": label, "status": "done", "error": None}
             except Exception as e:
