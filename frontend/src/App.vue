@@ -77,6 +77,10 @@ async function sendMessage() {
       return
     }
 
+    // Show thinking indicator while waiting for model
+    messages.value[lastIdx].rendered =
+      '<span class="thinking-indicator">正在分析<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></span>'
+
     let fullText = ''
     let streamDone = false
     let streamError = null
@@ -326,6 +330,21 @@ onBeforeUnmount(() => {
 
 .thinking-tool-line .error-icon {
   color: #ef4444;
+}
+
+/* ── Thinking indicator animation ── */
+.thinking-indicator {
+  color: #94a3b8;
+  font-size: 14px;
+}
+.thinking-indicator .dot {
+  animation: dotFade 1.4s infinite;
+}
+.thinking-indicator .dot:nth-child(2) { animation-delay: 0.2s; }
+.thinking-indicator .dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes dotFade {
+  0%, 60%, 100% { opacity: 0.2; }
+  30% { opacity: 1; }
 }
 
 .bubble :deep(code) {
