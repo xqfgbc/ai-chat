@@ -1,4 +1,4 @@
-"""SlowSQL agent and router agent for AI chat."""
+"""Agent framework: router, SlowSQL agent, Operations agent, and helpers."""
 
 import asyncio
 import json
@@ -56,10 +56,19 @@ class RouterAgent:
                 "explain analyze", "执行效率", "查询慢",
             ],
         },
-        # Add new agents here, e.g.:
-        # "data_analysis": {
-        #     "keywords": ["分析", "统计", "报表", "图表"],
-        # },
+        "ops": {
+            "keywords": [
+                "运维", "磁盘", "cpu", "内存", "服务器", "server",
+                "部署", "deploy", "监控", "告警", "日志", "log",
+                "网络", "network", "故障", "宕机", "重启", "restart",
+                "进程", "process", "负载", "load", "磁盘空间",
+                "带宽", "bandwidth", "防火墙", "firewall", "容器",
+                "docker", "kubernetes", "k8s", "nginx", "apache",
+                "备份", "backup", "恢复", "restore", "扩容",
+                "缩容", "迁移", "migrate", "端口", "port",
+                "连接数", "并发", "超时", "timeout", "oom",
+            ],
+        },
     }
 
     @classmethod
@@ -267,3 +276,41 @@ class SlowSQLAgent:
         """Simulate MCP tool call with 1.5s delay."""
         await asyncio.sleep(1.5)
         return TOOLS[name]["value"]
+
+
+# ── Operations Agent ───────────────────────────────────────────────────
+
+
+class OpsAgent:
+    """Encapsulates the operations knowledge workflow.
+
+    Calls the ops Bailian app directly (no tool collection needed).
+    """
+
+    def __init__(self, api_key: str, app_id: str):
+        self.api_key = api_key
+        self.app_id = app_id
+
+    async def execute(self, message: str):
+        """Run the ops knowledge workflow, yielding SSE event dicts.
+
+        Yields:
+            {"type": "thinking_start"}
+            {"type": "text", "content": str}
+            {"type": "done"}
+            {"type": "error", "message": str}
+        """
+        yield {"type": "thinking_start"}
+
+        session_id = str(uuid.uuid4())
+
+        try:
+            async for text in _stream_bailian_text(
+                self.api_key, self.app_id, message, {}, session_id
+            ):
+                yield {"type": "text", "content": text}
+        except RuntimeError as e:
+            yield {"type": "error", "message": str(e)}
+            return
+
+        yield {"type": "done"}

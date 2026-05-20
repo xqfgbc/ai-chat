@@ -240,7 +240,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="chat-layout">
-    <h1 class="title">SQL 智能诊断</h1>
+    <h1 class="title">运维智能助手</h1>
 
     <div ref="chatContainer" class="messages">
       <template v-for="(msg, i) in messages" :key="i">

@@ -12,13 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from agent import TOOLS, RouterAgent, SlowSQLAgent, _stream_bailian_text, _stream_qwen_text
-
-# Agent class lookup for route → agent mapping.
-# Add new agents here when extending RouterAgent.AGENTS.
-AGENT_MAP = {
-    "slow_sql": SlowSQLAgent,
-}
+from agent import TOOLS, RouterAgent, SlowSQLAgent, OpsAgent, _stream_bailian_text, _stream_qwen_text
 
 load_dotenv()
 
@@ -26,6 +20,14 @@ DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-plus")
 BAILIAN_APP_ID = os.getenv("BAILIAN_APP_ID", "")
+BAILIAN_OPS_APP_ID = os.getenv("BAILIAN_OPS_APP_ID", "")
+
+# Route → (Agent class, app_id) mapping.
+# Add new agents here when extending RouterAgent.AGENTS.
+AGENT_MAP = {
+    "slow_sql": (SlowSQLAgent, BAILIAN_APP_ID),
+    "ops": (OpsAgent, BAILIAN_OPS_APP_ID),
+}
 
 
 @asynccontextmanager
@@ -150,8 +152,8 @@ async def agent_chat(req: AgentRequest):
         yield f"data: {json.dumps({'type': 'route', 'action': route})}\n\n"
 
         if route in AGENT_MAP:
-            agent_cls = AGENT_MAP[route]
-            agent = agent_cls(DASHSCOPE_API_KEY, BAILIAN_APP_ID)
+            agent_cls, agent_app_id = AGENT_MAP[route]
+            agent = agent_cls(DASHSCOPE_API_KEY, agent_app_id)
             async for event in agent.execute(req.message):
                 yield f"data: {json.dumps(event)}\n\n"
         else:
