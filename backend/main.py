@@ -160,7 +160,7 @@ async def bailian_chat(req: BailianRequest):
     if not DASHSCOPE_API_KEY:
         raise HTTPException(status_code=500, detail="DASHSCOPE_API_KEY not configured")
 
-    def generate():
+    async def generate():
         session_id = str(uuid.uuid4())
         prompt = req.message
         max_rounds = 5
@@ -169,24 +169,46 @@ async def bailian_chat(req: BailianRequest):
         try:
             while round_num < max_rounds:
                 round_num += 1
-                responses = Application.call(
-                    api_key=DASHSCOPE_API_KEY,
-                    app_id=BAILIAN_APP_ID,
-                    prompt=prompt,
-                    biz_params={"user_prompt_params": req.params},
-                    stream=True,
-                    incremental_output=True,
-                    session_id=session_id,
-                )
+                queue = asyncio.Queue()
+                loop = asyncio.get_event_loop()
+
+                def _call():
+                    try:
+                        responses = Application.call(
+                            api_key=DASHSCOPE_API_KEY,
+                            app_id=BAILIAN_APP_ID,
+                            prompt=prompt,
+                            biz_params={"user_prompt_params": req.params},
+                            stream=True,
+                            incremental_output=True,
+                            session_id=session_id,
+                        )
+                        round_text = ""
+                        for response in responses:
+                            if response.status_code != HTTPStatus.OK:
+                                loop.call_soon_threadsafe(queue.put_nowait, ('error', response.message))
+                                return
+                            text = response.output.text if response.output else ''
+                            if text:
+                                round_text += text
+                                loop.call_soon_threadsafe(queue.put_nowait, ('text', text))
+                        loop.call_soon_threadsafe(queue.put_nowait, ('round_done', round_text))
+                    except Exception as e:
+                        loop.call_soon_threadsafe(queue.put_nowait, ('error', str(e)))
+
+                loop.run_in_executor(None, _call)
+
                 round_text = ""
-                for response in responses:
-                    if response.status_code != HTTPStatus.OK:
-                        yield f"data: {json.dumps({'error': response.message})}\n\n"
+                while True:
+                    kind, data = await queue.get()
+                    if kind == 'error':
+                        yield f"data: {json.dumps({'error': data})}\n\n"
                         return
-                    text = response.output.text if response.output else ''
-                    if text:
-                        round_text += text
-                        yield f"data: {json.dumps({'text': text})}\n\n"
+                    if kind == 'round_done':
+                        round_text = data
+                        break
+                    if kind == 'text':
+                        yield f"data: {json.dumps({'text': data})}\n\n"
 
                 if not _is_truncated(round_text):
                     break
